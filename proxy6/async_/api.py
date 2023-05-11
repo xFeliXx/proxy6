@@ -4,24 +4,56 @@
 #  Created by LulzLoL231 at 02/07/22
 #
 import logging
+import time
 from asyncio import sleep
+from typing import Coroutine, Any
 from urllib.parse import urlencode
 
-from httpx import AsyncClient
+from httpx import AsyncClient, Response, USE_CLIENT_DEFAULT
 
 from .. import types
 from .. import errors
 
-
 log = logging.getLogger('proxy6')
+
+
+class RequestDelayer:
+    REQUESTS_SECONDS_INTERVAL = 1
+    MAX_REQUESTS_PER_INTERVAL = 2
+
+    def __init__(self):
+        self.last_requests: list[dict[str, float]] = list()
+
+    async def run_or_delay(self, coro: Coroutine[Any, Any, Response]) -> Response:
+        while True:
+            old_requests = [request for request in self.last_requests if "finish" in request and
+                            time.time() - request["finish"] > self.REQUESTS_SECONDS_INTERVAL]
+            for old_request in old_requests:
+                self.last_requests.remove(old_request)
+
+            if len(self.last_requests) < self.MAX_REQUESTS_PER_INTERVAL:
+                break
+
+            await sleep(1)
+
+        request = {"start": time.time()}
+        self.last_requests.append(request)
+
+        try:
+            result = await coro
+        finally:
+            request["finish"] = time.time()
+
+        return result
 
 
 class AsyncAPIConnector:
     ENDPOINT = 'https://proxy6.net/api/{}/{}'
 
-    def __init__(self, apikey: str) -> None:
+    def __init__(self, apikey: str, request_timeout: int = None) -> None:
         self.apikey = apikey
-        self.__rps_try = 0
+        self.request_timeout = request_timeout
+        self.request_delayer = RequestDelayer()
 
     async def make_request(self, method: str, params: dict | None = None) -> dict:
         '''Makes API request.
@@ -37,24 +69,21 @@ class AsyncAPIConnector:
         Returns:
             dict: API response.
         '''
-        log.debug(f'Called with args: ({method}, {params}); Try #{self.__rps_try}.')
-        await sleep(1)  # skip RPS error... Maybe...
+        log.debug(f'Called with args: ({method}, {params})')
         url = self.ENDPOINT.format(self.apikey, method)
         if params:
             url += f'?{urlencode(params)}'
         log.debug(f'Final URL: {url}')
         async with AsyncClient() as sess:
-            resp = await sess.get(url)
+            resp = await self.request_delayer.run_or_delay(
+                sess.get(url, timeout=self.request_timeout if self.request_timeout else USE_CLIENT_DEFAULT)
+            )
             if resp.is_success:
                 json_resp = resp.json()
                 log.debug(f'API Response: {json_resp}')
                 return (await self.process_api_response(json_resp))
             elif resp.status_code == 503:
-                if self.__rps_try == 3:
-                    self.__rps_try = 0
-                    raise errors.RPSAPIError('Большое колличество запросов. Попробуйте позже.')
-                self.__rps_try += 1
-                return (await self.make_request(method, params))
+                raise errors.RPSAPIError('Большое колличество запросов. Попробуйте позже.')
             else:
                 raise errors.UnexpectedAPIError('Не удалось получит данные у API.')
 
@@ -108,7 +137,8 @@ class AsyncAPIConnector:
                     )
                 case 220:
                     raise errors.CountryAPIError(
-                        resp, 'Ошибка страны, неверно указана страна (страны указываются в формате iso2), либо отсутствует'
+                        resp,
+                        'Ошибка страны, неверно указана страна (страны указываются в формате iso2), либо отсутствует'
                     )
                 case 230:
                     raise errors.IDsAPIError(
@@ -124,11 +154,13 @@ class AsyncAPIConnector:
                     )
                 case 300:
                     raise errors.ActiveProxyAllowAPIError(
-                        resp, 'Ошибка кол-ва прокси. Возникает при попытке покупки большего кол-ва прокси, чем доступно на сервисе'
+                        resp,
+                        'Ошибка кол-ва прокси. Возникает при попытке покупки большего кол-ва прокси, чем доступно на сервисе'
                     )
                 case 400:
                     raise errors.NoMoneyAPIError(
-                        resp, 'Ошибка баланса. На вашем балансе отсутствуют средства, либо их не хватает для покупки запрашиваемого кол-ва прокси'
+                        resp,
+                        'Ошибка баланса. На вашем балансе отсутствуют средства, либо их не хватает для покупки запрашиваемого кол-ва прокси'
                     )
                 case 404:
                     raise errors.NotFoundAPIError(
@@ -150,12 +182,12 @@ class AsyncAPIConnector:
 
 
 class AsyncProxy6(AsyncAPIConnector):
-    def __init__(self, apikey: str) -> None:
-        super().__init__(apikey)
+    def __init__(self, apikey: str, request_timeout: int = None) -> None:
+        super().__init__(apikey, request_timeout)
 
     async def get_price(
-        self, count: int,
-        period: int, version: types.ProxyVersion = types.ProxyVersion.IPV6
+            self, count: int,
+            period: int, version: types.ProxyVersion = types.ProxyVersion.IPV6
     ) -> types.GetPriceResponse:
         '''Используется для получения информации о сумме заказа в зависимости от периода и кол-ва прокси.
 
@@ -176,7 +208,7 @@ class AsyncProxy6(AsyncAPIConnector):
         return types.GetPriceResponse(**resp)
 
     async def get_count(
-        self, country: str, version: types.ProxyVersion = types.ProxyVersion.IPV6
+            self, country: str, version: types.ProxyVersion = types.ProxyVersion.IPV6
     ) -> types.GetCountResponse:
         '''Используется для получения информации о доступном для приобретения кол-ве прокси определенной страны.
 
@@ -195,7 +227,7 @@ class AsyncProxy6(AsyncAPIConnector):
         return types.GetCountResponse(**resp)
 
     async def get_country(
-        self, version: types.ProxyVersion = types.ProxyVersion.IPV6
+            self, version: types.ProxyVersion = types.ProxyVersion.IPV6
     ) -> types.GetCountryResponse:
         '''Используется для получения информации о доступных для приобретения странах.
 
@@ -212,8 +244,8 @@ class AsyncProxy6(AsyncAPIConnector):
         return types.GetCountryResponse(**resp)
 
     async def get_proxy(
-        self, state: types.ProxyState = types.ProxyState.ALL,
-        descr: str | None = None
+            self, state: types.ProxyState = types.ProxyState.ALL,
+            descr: str | None = None
     ) -> types.GetProxyResponse:
         '''Используется для получения списка ваших прокси.
 
@@ -234,7 +266,7 @@ class AsyncProxy6(AsyncAPIConnector):
         return types.GetProxyResponse(**resp)
 
     async def set_type(
-        self, ids: list[str], type: types.ProxyType
+            self, ids: list[str], type: types.ProxyType
     ) -> types.SetTypeResponse:
         '''Используется для изменения типа (протокола) у списка прокси.
 
@@ -257,8 +289,8 @@ class AsyncProxy6(AsyncAPIConnector):
         return types.SetTypeResponse(**resp)
 
     async def set_descr(
-        self, new: str, old: str | None = None,
-        ids: list[str] | None = None
+            self, new: str, old: str | None = None,
+            ids: list[str] | None = None
     ) -> types.SetDescrResponse:
         '''Используется для обновления технического комментария у списка прокси, который был установлен при покупке.
 
@@ -295,10 +327,10 @@ class AsyncProxy6(AsyncAPIConnector):
             return types.SetDescrResponse(**resp)
 
     async def buy(
-        self, count: int, period: int, country: str,
-        version: types.ProxyVersion = types.ProxyVersion.IPV6,
-        type: types.ProxyType = types.ProxyType.HTTPS,
-        descr: str | None = None, auto_prolong: bool = False
+            self, count: int, period: int, country: str,
+            version: types.ProxyVersion = types.ProxyVersion.IPV6,
+            type: types.ProxyType = types.ProxyType.HTTPS,
+            descr: str | None = None, auto_prolong: bool = False
     ) -> types.BuyResponse:
         '''Используется для покупки прокси.
 
@@ -338,7 +370,7 @@ class AsyncProxy6(AsyncAPIConnector):
         return types.BuyResponse(**resp)
 
     async def prolong(
-        self, period: int, ids: list[str]
+            self, period: int, ids: list[str]
     ) -> types.ProlongResponse:
         '''Используется для продления текущих прокси.
 
@@ -358,7 +390,7 @@ class AsyncProxy6(AsyncAPIConnector):
         return types.ProlongResponse(**resp)
 
     async def delete(
-        self, ids: list[str] | None = None, descr: str | None = None
+            self, ids: list[str] | None = None, descr: str | None = None
     ) -> types.DeleteResponse:
         '''Используется для удаления прокси.
 

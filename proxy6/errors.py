@@ -3,17 +3,17 @@
 #  pyProxy6 API: Errors
 #  Created by LulzLoL231 at 02/07/22
 #
-class BaseAPIError(BaseException):
+class BaseAPIError(Exception):
     def __init__(self, raw_response: dict, *args: object) -> None:
         super().__init__(*args)
         self.raw_response = raw_response
 
 
-class UnexpectedAPIError(BaseException):
+class UnexpectedAPIError(Exception):
     pass
 
 
-class RPSAPIError(BaseException):
+class RPSAPIError(Exception):
     pass
 
 

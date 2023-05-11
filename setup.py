@@ -30,7 +30,7 @@ def requirements():
 
 
 setup(
-    name='pyProxy6',
+    name='proxy6',
     version=verstr,
     long_description=long_description(),
     long_description_content_type='text/markdown',

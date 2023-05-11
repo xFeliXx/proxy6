@@ -81,6 +81,9 @@ class ProxyInfo(BaseModel):
     passwd: str = Field(
         ..., alias='pass', description='Пароль'
     )
+    version: ProxyVersion = Field(
+        ..., description='Версия прокси'
+    )
     type: ProxyType = Field(
         ..., description='Тип прокси'
     )
