@@ -8,5 +8,5 @@ from .async_.api import AsyncProxy6
 
 
 __author__ = 'LulzLoL231'
-__version__ = '1.1'
+__version__ = '1.2'
 __contact__ = 'https://github.com/LulzLoL231'
